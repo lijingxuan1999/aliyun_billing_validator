@@ -1,0 +1,7 @@
+{
+  "agentId": "aliyun-billing-validator",
+  "name": "SAP 3PL 物流账单校验 Agent",
+  "description": "第三方物流(3PL)账单发票与合同费率卡智能校验对账。自动 OCR 提取物流发票行项，逐项比对合同约定单价，识别超收、价格错配、漏项三类差异并算出差异金额；对问题发票生成驳回意见与供应商整改邮件草稿，支持费率卡上传与账单历史查询。适用场景：物流运费对账、账单审核、费率卡管理、发票驳回。当用户提到物流发票、运费账单、费率卡、账单差异、超收、驳回发票时路由到本 Agent。",
+  "url": "https://coach-mini-poc-aliyun-billing-validator-mcp.cfapps.eu12.hana.ondemand.com/mcp",
+  "agentKey": "<MCP_API_KEY>"
+}

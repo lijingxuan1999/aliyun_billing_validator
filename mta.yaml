@@ -1,12 +1,13 @@
 _schema-version: '3.2.0'
 ID: billing-validator-mcp
 version: 1.0.0
-description: "SAP Billing Validator MCP Server for QwenWork"
+description: "SAP Billing Validator — split into agent (brain) + MCP proxy"
 
 modules:
-  - name: billing-validator-mcp
+  # ── Agent: LLM + OData + staged files (the brain) ────────────────────────────
+  - name: aliyun-billing-validator-agent
     type: python
-    path: ./
+    path: ./agent
     build-parameters:
       builder: custom
       commands:
@@ -26,7 +27,7 @@ modules:
       instances: 1
       timeout: 180
       routes:
-        - route: ${space}-billing-validator-mcp.${default-domain}
+        - route: ${space}-aliyun-billing-validator-agent.${default-domain}
     properties:
       PYTHONUNBUFFERED: "1"
       ENV: production
@@ -35,10 +36,32 @@ modules:
       USE_MOCK_DATA: "false"
       ODATA_PAGE_TOP: "20"
       SRV_URL: https://cs-d-gc-demo-coach-test1-qglj6zk6-coach-mini-poc-billinge726738.cfapps.eu12.hana.ondemand.com
-      # MCP_API_KEY is injected via: cf set-env billing-validator-mcp MCP_API_KEY <secret>
+      # AGENT_API_KEY is injected via: cf set-env aliyun-billing-validator-agent AGENT_API_KEY <secret>
     requires:
       - name: Coach_mini_Poc_aicore
       - name: Coach_mini_Poc_xsuaa
+
+  # ── MCP proxy: thin, forwards to the agent over HTTP ─────────────────────────
+  - name: aliyun-billing-validator-mcp
+    type: python
+    path: ./mcp
+    parameters:
+      buildpack: python_buildpack
+      memory: 256M
+      disk-quota: 512M
+      instances: 1
+      timeout: 120
+      routes:
+        - route: ${space}-aliyun-billing-validator-mcp.${default-domain}
+    properties:
+      PYTHONUNBUFFERED: "1"
+      ENV: production
+      # AGENT_BASE_URL: hardcoded to the agent's real (sanitized) route.
+      # NOTE: ${space} is lowercased/hyphenated in routes but kept raw in property
+      # substitution, so we cannot derive this from ${space} — hardcode it instead.
+      AGENT_BASE_URL: https://coach-mini-poc-aliyun-billing-validator-agent.cfapps.eu12.hana.ondemand.com
+      # MCP_API_KEY   is injected via: cf set-env aliyun-billing-validator-mcp MCP_API_KEY <secret>
+      # AGENT_API_KEY is injected via: cf set-env aliyun-billing-validator-mcp AGENT_API_KEY <secret>
 
 resources:
   - name: Coach_mini_Poc_aicore

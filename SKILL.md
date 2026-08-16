@@ -1,7 +1,7 @@
 ---
 name: sap-billing-validator
 description: SAP 3PL 账单校验系统，支持费率卡上传、发票校验、驳回发票并生成供应商通知邮件草稿
-version: 1.1.0
+version: 1.2.0
 triggers:
   - 上传账单
   - 上传发票
@@ -38,6 +38,11 @@ triggers:
 
 ## 使用步骤
 
+### 整体提问 / 统一入口（chat）
+- 若只想用一句自然语言完成提问（尤其经 SAP Agent Hub 调用时），调用 chat，传入 user_input（自然语言问题）和 session_id（首轮传 null，续接多轮时传上轮返回的 session_id）。
+- chat 返回 {session_id, answer}，answer 为 Markdown 格式；内部会自动路由到下面的具体能力，无需你手工选 tool。
+- 需要精细控制某一步（如指定预置文件、指定费率卡 ID）时，用下面的细粒度 tool。
+
 ### 使用服务端预置文件校验（推荐，无需上传）
 1. 用户直接说"用 billing doc 和费率卡进行校验"
 2. 系统自动调用 list_staged_files 列出可用文件
@@ -47,12 +52,12 @@ triggers:
 
 ### 上传费率卡（手动）
 1. 用户提供 CSV 文件和费率卡名称
-2. 调用 ask_billing_agent，说明要上传费率卡，包含 base64 编码的 CSV 内容
+2. 调用 upload_rate_card_csv，传入费率卡名称和 base64 编码的 CSV 内容（可选：有效期、描述）
 3. 返回创建成功的费率卡 ID 和行项目数量
 
 ### 上传并校验发票 PDF（手动）
 1. 用户提供 PDF 文件和对应费率卡
-2. 调用 ask_billing_agent，说明要上传并校验发票
+2. 调用 upload_billing_pdf，传入文件名、base64 编码的 PDF 内容、目标费率卡 ID
 3. 系统自动完成：OCR 提取 → 规则校验 → AI 语义匹配
 4. 返回校验结果：整体状态、金额对比、具体 findings
 

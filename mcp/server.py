@@ -1,28 +1,25 @@
-"""MCP Server entry point for billing-validator-mcp.
+"""MCP Server entry point for aliyun-billing-validator-mcp.
 
-Exposes three MCP tools:
-  - ask_billing_agent(query)          — natural language queries via LangGraph + SAP AI Core
-  - upload_billing_pdf(...)           — direct PDF upload + OCR + validation (no LLM in path)
-  - upload_rate_card_csv(...)         — direct CSV rate card upload (no LLM in path)
+Thin proxy: exposes the same 7 MCP tools QwenWork already knows, but holds ZERO
+business logic. Every tool forwards over HTTP to aliyun-billing-validator-agent
+(the brain: LangGraph + SAP AI Core + OData + staged files), then returns the
+agent's answer verbatim.
 
-Authentication: static API key via MCP_API_KEY env var.
-Clients must send:  Authorization: Bearer <MCP_API_KEY>
+    QwenWork ──MCP(streamable-http /mcp)──> THIS proxy ──httpx+Bearer──> agent REST
+
+Inbound auth : static API key via MCP_API_KEY (QwenWork sends Authorization: Bearer <MCP_API_KEY>).
+Outbound auth: static API key via AGENT_API_KEY (this proxy sends Authorization: Bearer <AGENT_API_KEY>).
+Agent base   : AGENT_BASE_URL (full https route of the agent app).
 """
 
-import base64
-import json
 import logging
 import os
 import sys
 import uuid
-from datetime import datetime
-from pathlib import Path
 
-from dotenv import load_dotenv
+import httpx
 from cfenv import AppEnv
-
-# Pre-staged files directory (bundled with the BTP deployment)
-STAGED_DIR = Path(__file__).parent.parent / "staged_files"
+from dotenv import load_dotenv
 
 # ── Load env ──────────────────────────────────────────────────────────────────
 if os.getenv("VCAP_SERVICES"):
@@ -38,25 +35,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Lazy agent init (avoids AI Core calls at import time) ─────────────────────
-_agent = None
-
-
-def _get_agent():
-    global _agent
-    if _agent is None:
-        from agent import BillingValidatorAgent
-        _agent = BillingValidatorAgent()
-        logger.info("BillingValidatorAgent initialised")
-    return _agent
-
+# ── Config ──────────────────────────────────────────────────────────────────��─
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://localhost:5001").rstrip("/")
+AGENT_API_KEY  = os.getenv("AGENT_API_KEY", "")
+MCP_API_KEY    = os.getenv("MCP_API_KEY", "")
+HTTP_TIMEOUT   = float(os.getenv("AGENT_HTTP_TIMEOUT", "180"))
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
-from fastmcp import FastMCP
-from starlette.requests import Request
-from starlette.responses import JSONResponse
+import hmac
 
-MCP_API_KEY = os.getenv("MCP_API_KEY", "")
+from fastmcp import FastMCP
+from pydantic import BaseModel
 
 mcp = FastMCP(
     name="billing-validator",
@@ -68,14 +57,98 @@ mcp = FastMCP(
 )
 
 
-async def _check_api_key(request: Request) -> JSONResponse | None:
-    """Middleware-style API key check. Returns error response or None if OK."""
-    if not MCP_API_KEY:
-        return None  # no key configured — open access (dev mode)
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or auth[len("Bearer "):] != MCP_API_KEY:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    return None
+class BearerAuthMiddleware:
+    """Pure-ASGI Bearer check for the /mcp endpoint (SSE-safe: never buffers the body).
+
+    key falsy (unset) → open access (dev mode). Otherwise constant-time compare;
+    401 on mismatch. Guards the QwenWork-direct MCP endpoint with a static MCP_API_KEY.
+    """
+
+    def __init__(self, app, key: str) -> None:
+        self._app, self._key = app, key
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or not self._key:
+            await self._app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers", []))
+        auth = headers.get(b"authorization", b"").decode("latin-1")
+        if not auth.startswith("Bearer ") or not hmac.compare_digest(
+            auth[7:].encode(), self._key.encode()
+        ):
+            body = b'{"error": "unauthorized"}'
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            })
+            await send({"type": "http.response.body", "body": body, "more_body": False})
+            return
+        await self._app(scope, receive, send)
+
+
+def _agent_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    if AGENT_API_KEY:
+        headers["Authorization"] = f"Bearer {AGENT_API_KEY}"
+    return headers
+
+
+async def _forward(method: str, endpoint: str, payload: dict | None = None) -> str:
+    """Forward a call to the agent and return its `result` string verbatim."""
+    url = f"{AGENT_BASE_URL}{endpoint}"
+    logger.info("proxy %s %s", method, endpoint)
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            if method == "GET":
+                resp = await client.get(url, headers=_agent_headers())
+            else:
+                resp = await client.post(url, headers=_agent_headers(), json=payload or {})
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        logger.error("agent %s %s -> HTTP %s: %s", method, endpoint, e.response.status_code, e.response.text[:500])
+        return f"Agent error ({e.response.status_code}): {e.response.text[:500]}"
+    except httpx.HTTPError as e:
+        logger.error("agent %s %s -> transport error: %s", method, endpoint, e)
+        return f"Failed to reach billing agent: {e}"
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.text
+    return data.get("result", resp.text) if isinstance(data, dict) else str(data)
+
+
+# ── SAP Agent Hub unified entry ─────────────────────────────────────────────────
+#
+# The hub (and QwenWork via the hub) speaks a single `chat` tool per the hub
+# integration contract: chat(user_input, session_id|null) -> {session_id, answer}.
+# It proxies to the agent's /ask, exactly like ask_billing_agent, but wraps the
+# result in the hub's structured envelope. The 7 granular tools below remain for
+# QwenWork-direct (non-hub) usage — this is purely additive.
+
+
+class ChatOutput(BaseModel):
+    session_id: str
+    answer: str
+
+
+@mcp.tool()
+async def chat(user_input: str, session_id: str | None = None) -> ChatOutput:
+    """SAP 3PL 物流账单校验智能体。校验第三方物流(3PL)账单发票与合同费率卡的一致性:
+    OCR 提取发票行项、逐项比对合同单价、识别超收/价格错配/漏项差异并算出差异金额,
+    对问题发票生成驳回意见与供应商整改邮件草稿,支持费率卡上传与账单历史查询。
+
+    Args:
+        user_input: 用户的自然语言问题(必需)。
+        session_id: 传 null 开启新会话,传上轮返回的 session_id 续接多轮对话。
+    """
+    sid = session_id or str(uuid.uuid4())
+    answer = await _forward("POST", "/ask", {"query": user_input, "session_id": sid})
+    return ChatOutput(session_id=sid, answer=answer)
 
 
 @mcp.tool()
@@ -95,19 +168,7 @@ async def ask_billing_agent(query: str, session_id: str = "") -> str:
         query: Natural language question or task.
         session_id: Optional session identifier for multi-turn conversation.
     """
-    if not session_id:
-        session_id = str(uuid.uuid4())
-
-    logger.info("ask_billing_agent session=%s query_len=%d", session_id, len(query))
-
-    agent = _get_agent()
-    final_response = "Unable to process request."
-    async for item in agent.astream(query, session_id):
-        if item.is_task_complete or item.require_user_input:
-            final_response = item.content
-            break
-
-    return final_response
+    return await _forward("POST", "/ask", {"query": query, "session_id": session_id})
 
 
 @mcp.tool()
@@ -130,9 +191,7 @@ async def upload_billing_pdf(
         rate_card_id: UUID of the Rate Card to validate against.
                       Use ask_billing_agent to query available rate cards first.
     """
-    from agent import upload_and_validate_billing_pdf
-    logger.info("upload_billing_pdf file=%s rate_card_id=%s", file_name, rate_card_id)
-    return await upload_and_validate_billing_pdf.ainvoke({
+    return await _forward("POST", "/billing/upload-pdf", {
         "file_name":    file_name,
         "pdf_base64":   pdf_base64,
         "rate_card_id": rate_card_id,
@@ -158,9 +217,7 @@ async def upload_rate_card_csv(
         valid_to: Validity end date in YYYY-MM-DD format (optional).
         description: Optional description for the rate card.
     """
-    from agent import upload_rate_card
-    logger.info("upload_rate_card_csv name=%s", name)
-    return await upload_rate_card.ainvoke({
+    return await _forward("POST", "/ratecard/upload", {
         "name":        name,
         "csv_base64":  csv_base64,
         "valid_from":  valid_from,
@@ -177,17 +234,7 @@ async def list_staged_files() -> str:
     without providing file content — to discover which files are already available
     on the server for immediate processing.
     """
-    if not STAGED_DIR.exists():
-        return "No staged files directory found."
-    files = [
-        {"name": f.name, "size_kb": round(f.stat().st_size / 1024, 1)}
-        for f in sorted(STAGED_DIR.iterdir())
-        if f.is_file() and not f.name.startswith(".")
-    ]
-    if not files:
-        return "No staged files available."
-    import json
-    return json.dumps({"staged_files": files}, ensure_ascii=False)
+    return await _forward("GET", "/staged/files")
 
 
 @mcp.tool()
@@ -206,18 +253,8 @@ async def validate_staged_billing_pdf(
         rate_card_id: UUID of the Rate Card to validate against.
                       Use ask_billing_agent to query available rate cards first.
     """
-    file_path = STAGED_DIR / file_name
-    if not file_path.exists():
-        available = [f.name for f in STAGED_DIR.iterdir() if f.is_file() and not f.name.startswith(".")]
-        return f"File '{file_name}' not found. Available files: {available}"
-
-    pdf_base64 = base64.b64encode(file_path.read_bytes()).decode()
-    logger.info("validate_staged_billing_pdf file=%s rate_card_id=%s", file_name, rate_card_id)
-
-    from agent import upload_and_validate_billing_pdf
-    return await upload_and_validate_billing_pdf.ainvoke({
+    return await _forward("POST", "/staged/validate-pdf", {
         "file_name":    file_name,
-        "pdf_base64":   pdf_base64,
         "rate_card_id": rate_card_id,
     })
 
@@ -242,18 +279,9 @@ async def upload_staged_rate_card(
         valid_to: Validity end date in YYYY-MM-DD format (optional).
         description: Optional description for the rate card.
     """
-    file_path = STAGED_DIR / file_name
-    if not file_path.exists():
-        available = [f.name for f in STAGED_DIR.iterdir() if f.is_file() and not f.name.startswith(".")]
-        return f"File '{file_name}' not found. Available files: {available}"
-
-    csv_base64 = base64.b64encode(file_path.read_bytes()).decode()
-    logger.info("upload_staged_rate_card file=%s name=%s", file_name, name)
-
-    from agent import upload_rate_card
-    return await upload_rate_card.ainvoke({
+    return await _forward("POST", "/staged/upload-ratecard", {
+        "file_name":   file_name,
         "name":        name,
-        "csv_base64":  csv_base64,
         "valid_from":  valid_from,
         "valid_to":    valid_to,
         "description": description,
@@ -280,78 +308,33 @@ async def reject_invoice_and_draft_email(
             contract rate, billed rate, overcharge amount).
         supplier_contact_email: Supplier billing contact email (default provided).
     """
-    # Approval flow number — fixed reference for demo script HZL-2026-003
-    approval_flow_no = "PR-20261028-007"
-    submitted_at     = "2026-10-28 14:32:05"
-
-    email_subject = (
-        f"Invoice Rejection Notice — {invoice_number} | Contract {CONTRACT_NO}"
-    )
-    email_body = f"""\
-Dear Billing Team,
-
-Following our automated billing audit under Contract {CONTRACT_NO}, a discrepancy \
-has been identified in Invoice {invoice_number}. We are formally notifying you of \
-its rejection and requesting a corrected re-invoice.
-
-REJECTION DETAILS
-─────────────────────────────────────────
-Invoice No.          : {invoice_number}
-Contract No.         : {CONTRACT_NO}
-Rejection Reference  : {approval_flow_no}
-Submitted            : {submitted_at}
-
-DISCREPANCY IDENTIFIED
-─────────────────────────────────────────
-{discrepancy_description}
-
-ACTION REQUIRED
-─────────────────────────────────────────
-Please re-issue the invoice applying the contractual unit rate as specified in \
-Contract {CONTRACT_NO}. The corrected invoice should be submitted within \
-5 business days of this notice.
-
-For any queries regarding this rejection, please contact our Logistics Finance team.
-
-Best regards,
-Huazhong Machinery Group Co., Ltd.
-Logistics Finance Department
-logistics-finance@huazhong-machinery.com
-"""
-
-    logger.info(
-        "reject_invoice_and_draft_email invoice=%s flow=%s",
-        invoice_number, approval_flow_no,
-    )
-
-    result = {
-        "rejection": {
-            "status":            "submitted",
-            "invoice_number":    invoice_number,
-            "approval_flow_no":  approval_flow_no,
-            "submitted_at":      submitted_at,
-            "message":           f"Rejection request submitted. Approval flow: {approval_flow_no}",
-        },
-        "email_draft": {
-            "status":   "draft — awaiting user confirmation before sending",
-            "to":       supplier_contact_email,
-            "subject":  email_subject,
-            "body":     email_body,
-        },
-    }
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return await _forward("POST", "/billing/reject", {
+        "invoice_number":         invoice_number,
+        "discrepancy_description": discrepancy_description,
+        "supplier_contact_email":  supplier_contact_email,
+    })
 
 
 def main():
     import uvicorn
+    from starlette.middleware import Middleware
 
     port = int(os.getenv("PORT", "5000"))
     host = os.getenv("HOST", "0.0.0.0")
 
-    logger.info("=== Billing Validator MCP Server starting on %s:%d ===", host, port)
+    logger.info("=== Billing Validator MCP proxy starting on %s:%d ===", host, port)
+    logger.info("Forwarding to agent: %s", AGENT_BASE_URL)
+    logger.info("MCP endpoint auth: %s", "ENABLED" if MCP_API_KEY else "OPEN (no key)")
 
-    # Build the ASGI app from FastMCP with streamable-http transport
-    app = mcp.http_app(transport="streamable-http")
+    # Streamable-HTTP + SSE-safe Bearer auth on /mcp.
+    # stateless_http=True per the SAP Agent Hub contract (hub calls /mcp without an
+    # MCP initialize handshake / session id). Also broadens compatibility for
+    # QwenWork-direct — no session id required.
+    app = mcp.http_app(
+        transport="streamable-http",
+        stateless_http=True,
+        middleware=[Middleware(BearerAuthMiddleware, key=MCP_API_KEY)],
+    )
 
     uvicorn.run(app, host=host, port=port)
 

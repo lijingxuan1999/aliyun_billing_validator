@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "billing-validator": {
+      "url": "https://coach-mini-poc-aliyun-billing-validator-mcp.cfapps.eu12.hana.ondemand.com/mcp",
+      "type": "http",
+      "headers": {
+        "Authorization": "Bearer <MCP_API_KEY>"
+      },
+      "timeout": 600
+    }
+  }
+}

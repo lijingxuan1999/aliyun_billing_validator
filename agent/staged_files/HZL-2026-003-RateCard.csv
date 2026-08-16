@@ -1,0 +1,8 @@
+rateCardName,validFrom,validTo,status,currency,serviceCode,serviceDesc,unit,unitPrice,minQty,notes
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-001,Basic Freight,Ton,100.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-002,Fuel Surcharge,Ton,25.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-004,Origin Handling Fee,Ton,50.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-005,Pickup & Collection,Shipment,800.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-006,Oversized Cargo Permit Fee,Shipment,400.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-007,Documentation Fee,Shipment,400.0,1,Contract HZL-2026-003
+Huadong Logistics - East China Heavy Industry (HZL-2026-003),2026-01-01,2026-12-31,active,CNY,WH-008,On-Carriage at Destination,Ton,25.0,1,Contract HZL-2026-003
