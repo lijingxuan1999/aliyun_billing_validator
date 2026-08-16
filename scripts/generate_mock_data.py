@@ -83,7 +83,7 @@ def write_rate_card():
 
 INVOICES = [
     dict(
-        inv_no="HZL-INV-202610-001",
+        inv_no="HDLS-INV-202610-001",
         date="05-Oct-26", due="04-Dec-26",
         cargo="Steel Structural Components",
         origin="Shanghai Pudong Logistics Hub",
@@ -102,7 +102,7 @@ INVOICES = [
         total=84_200.00,
     ),
     dict(
-        inv_no="HZL-INV-202610-002",
+        inv_no="HDLS-INV-202610-002",
         date="12-Oct-26", due="11-Dec-26",
         cargo="Hydraulic Press Equipment",
         origin="Nanjing Manufacturing Centre, Jiangsu",
@@ -121,7 +121,7 @@ INVOICES = [
         total=56_800.00,
     ),
     dict(
-        inv_no="HZL-INV-202610-003",
+        inv_no="HDLS-INV-202610-003",
         date="20-Oct-26", due="19-Dec-26",
         cargo="CNC Machine Components",
         origin="Shanghai Minhang Warehouse",

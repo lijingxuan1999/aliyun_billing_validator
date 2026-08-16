@@ -275,7 +275,7 @@ async def reject_invoice_and_draft_email(
     Present the draft to the user for review and confirmation before any sending.
 
     Args:
-        invoice_number: Invoice number to reject (e.g. "HZL-INV-202610-003").
+        invoice_number: Invoice number to reject (e.g. "HDLS-INV-202610-003").
         discrepancy_description: Brief description of the discrepancy (service item,
             contract rate, billed rate, overcharge amount).
         supplier_contact_email: Supplier billing contact email (default provided).
