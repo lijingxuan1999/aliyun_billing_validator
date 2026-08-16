@@ -9,13 +9,18 @@ Authentication: static API key via MCP_API_KEY env var.
 Clients must send:  Authorization: Bearer <MCP_API_KEY>
 """
 
+import base64
 import logging
 import os
 import sys
 import uuid
+from pathlib import Path
 
 from dotenv import load_dotenv
 from cfenv import AppEnv
+
+# Pre-staged files directory (bundled with the BTP deployment)
+STAGED_DIR = Path(__file__).parent.parent / "staged_files"
 
 # ── Load env ──────────────────────────────────────────────────────────────────
 if os.getenv("VCAP_SERVICES"):
@@ -153,6 +158,97 @@ async def upload_rate_card_csv(
     """
     from agent import upload_rate_card
     logger.info("upload_rate_card_csv name=%s", name)
+    return await upload_rate_card.ainvoke({
+        "name":        name,
+        "csv_base64":  csv_base64,
+        "valid_from":  valid_from,
+        "valid_to":    valid_to,
+        "description": description,
+    })
+
+
+@mcp.tool()
+async def list_staged_files() -> str:
+    """List all pre-staged files available on the server (PDFs and CSVs).
+
+    Use this tool when the user refers to a billing document, invoice, or rate card
+    without providing file content — to discover which files are already available
+    on the server for immediate processing.
+    """
+    if not STAGED_DIR.exists():
+        return "No staged files directory found."
+    files = [
+        {"name": f.name, "size_kb": round(f.stat().st_size / 1024, 1)}
+        for f in sorted(STAGED_DIR.iterdir())
+        if f.is_file() and not f.name.startswith(".")
+    ]
+    if not files:
+        return "No staged files available."
+    import json
+    return json.dumps({"staged_files": files}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def validate_staged_billing_pdf(
+    file_name: str,
+    rate_card_id: str,
+) -> str:
+    """Validate a pre-staged billing invoice PDF against a rate card.
+
+    Use this tool when the user wants to validate a billing document that is
+    already available on the server (i.e. they refer to an invoice/billing doc
+    without uploading file content directly).
+
+    Args:
+        file_name: Name of the PDF file in the staged_files folder (e.g. "CEVA-invoice-2026-06.pdf").
+        rate_card_id: UUID of the Rate Card to validate against.
+                      Use ask_billing_agent to query available rate cards first.
+    """
+    file_path = STAGED_DIR / file_name
+    if not file_path.exists():
+        available = [f.name for f in STAGED_DIR.iterdir() if f.is_file() and not f.name.startswith(".")]
+        return f"File '{file_name}' not found. Available files: {available}"
+
+    pdf_base64 = base64.b64encode(file_path.read_bytes()).decode()
+    logger.info("validate_staged_billing_pdf file=%s rate_card_id=%s", file_name, rate_card_id)
+
+    from agent import upload_and_validate_billing_pdf
+    return await upload_and_validate_billing_pdf.ainvoke({
+        "file_name":    file_name,
+        "pdf_base64":   pdf_base64,
+        "rate_card_id": rate_card_id,
+    })
+
+
+@mcp.tool()
+async def upload_staged_rate_card(
+    file_name: str,
+    name: str,
+    valid_from: str = "",
+    valid_to: str = "",
+    description: str = "",
+) -> str:
+    """Upload a pre-staged Rate Card CSV file to the billing system.
+
+    Use this tool when the user wants to upload a rate card that is already
+    available on the server without providing the file content directly.
+
+    Args:
+        file_name: Name of the CSV file in the staged_files folder (e.g. "CEVA-rates-2026.csv").
+        name: Name for the rate card (e.g. "CEVA Air Freight HKG-TPE 2026").
+        valid_from: Validity start date in YYYY-MM-DD format (optional).
+        valid_to: Validity end date in YYYY-MM-DD format (optional).
+        description: Optional description for the rate card.
+    """
+    file_path = STAGED_DIR / file_name
+    if not file_path.exists():
+        available = [f.name for f in STAGED_DIR.iterdir() if f.is_file() and not f.name.startswith(".")]
+        return f"File '{file_name}' not found. Available files: {available}"
+
+    csv_base64 = base64.b64encode(file_path.read_bytes()).decode()
+    logger.info("upload_staged_rate_card file=%s name=%s", file_name, name)
+
+    from agent import upload_rate_card
     return await upload_rate_card.ainvoke({
         "name":        name,
         "csv_base64":  csv_base64,

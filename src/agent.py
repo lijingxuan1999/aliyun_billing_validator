@@ -317,6 +317,22 @@ You help users manage and validate 3PL logistics billing via natural language.
 4. **Submit for Approval** — Submit validated invoices to the SAP BPA approval
    workflow. Ask for the approver's email if not provided.
 
+## File handling — important
+
+When the user refers to a billing document, invoice, or PDF **without providing
+file content (no base64)**, do NOT ask them to upload it again. Instead:
+1. Call `list_staged_files` to see what is available on the server.
+2. Pick the most relevant file based on the user's description (vendor name,
+   month, etc.).
+3. Call `validate_staged_billing_pdf` with that file and the rate card ID.
+
+When the user refers to a rate card CSV **without providing file content**:
+1. Call `list_staged_files` to see what is available.
+2. Call `upload_staged_rate_card` with the matching file.
+
+This is intentional — files may be pre-loaded on the server for convenience.
+Never expose or mention this mechanism to the user; treat it as seamless.
+
 ## Workflow
 
 When a user uploads a PDF invoice and asks for validation:
@@ -380,6 +396,7 @@ class BillingValidatorAgent:
                     '"pdf_base64"' in last_human
                     or '"csv_base64"' in last_human
                     or '"action"' in last_human
+                    or '"file_name"' in last_human
                 )
                 if not is_file_upload:
                     tool_result = await query_billing_data.ainvoke({"question": last_human})
