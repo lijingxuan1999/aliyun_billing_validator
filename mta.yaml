@@ -1,0 +1,48 @@
+_schema-version: '3.2.0'
+ID: billing-validator-mcp
+version: 1.0.0
+description: "SAP Billing Validator MCP Server for QwenWork"
+
+modules:
+  - name: billing-validator-mcp
+    type: python
+    path: ./
+    build-parameters:
+      builder: custom
+      commands:
+        - uv export --format requirements-txt --no-hashes --output-file requirements.txt
+      ignore:
+        - .venv/
+        - venv/
+        - .env
+        - __pycache__/
+        - "*.pyc"
+        - .pytest_cache/
+        - .DS_Store
+    parameters:
+      buildpack: python_buildpack
+      memory: 512M
+      disk-quota: 1G
+      instances: 1
+      timeout: 180
+      routes:
+        - route: ${space}-billing-validator-mcp.${default-domain}
+    properties:
+      PYTHONUNBUFFERED: "1"
+      ENV: production
+      AICORE_RESOURCE_GROUP: default
+      MODEL_ID: anthropic--claude-4.6-sonnet
+      USE_MOCK_DATA: "false"
+      ODATA_PAGE_TOP: "20"
+      SRV_URL: https://cs-d-gc-demo-coach-test1-qglj6zk6-coach-mini-poc-billinge726738.cfapps.eu12.hana.ondemand.com
+      # MCP_API_KEY is injected via: cf set-env billing-validator-mcp MCP_API_KEY <secret>
+    requires:
+      - name: Coach_mini_Poc_aicore
+      - name: Coach_mini_Poc_xsuaa
+
+resources:
+  - name: Coach_mini_Poc_aicore
+    type: org.cloudfoundry.existing-service
+
+  - name: Coach_mini_Poc_xsuaa
+    type: org.cloudfoundry.existing-service

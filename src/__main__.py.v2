@@ -1,0 +1,126 @@
+"""MCP Server entry point for billing-validator-mcp.
+
+Exposes one MCP tool: ask_billing_agent(query)
+The tool runs the full LangGraph agent (SAP AI Core → Claude) and returns
+the final answer. Tool orchestration (rate card upload, PDF validation, etc.)
+happens inside the agent — the MCP layer is intentionally thin.
+
+Authentication: static API key via MCP_API_KEY env var.
+Clients must send:  Authorization: Bearer <MCP_API_KEY>
+"""
+
+import logging
+import os
+import sys
+import uuid
+
+from dotenv import load_dotenv
+from cfenv import AppEnv
+
+# ── Load env ──────────────────────────────────────────────────────────────────
+if os.getenv("VCAP_SERVICES"):
+    AppEnv()
+else:
+    load_dotenv()
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
+
+# ── Lazy agent init (avoids AI Core calls at import time) ─────────────────────
+_agent = None
+
+
+def _get_agent():
+    global _agent
+    if _agent is None:
+        from agent import BillingValidatorAgent
+        _agent = BillingValidatorAgent()
+        logger.info("BillingValidatorAgent initialised")
+    return _agent
+
+
+# ── MCP Server ────────────────────────────────────────────────────────────────
+from fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+MCP_API_KEY = os.getenv("MCP_API_KEY", "")
+
+mcp = FastMCP(
+    name="billing-validator",
+    instructions=(
+        "SAP 3PL Billing Validator Agent. "
+        "Upload rate cards (CSV) and billing invoices (PDF), run AI-powered "
+        "cross-validation, query historical results, and submit for approval."
+    ),
+)
+
+
+async def _check_api_key(request: Request) -> JSONResponse | None:
+    """Middleware-style API key check. Returns error response or None if OK."""
+    if not MCP_API_KEY:
+        return None  # no key configured — open access (dev mode)
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or auth[len("Bearer "):] != MCP_API_KEY:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return None
+
+
+@mcp.tool()
+async def ask_billing_agent(query: str, session_id: str = "") -> str:
+    """Ask the SAP Billing Validator Agent a question or give it a task.
+
+    The agent can:
+    - Upload a rate card CSV: provide the base64-encoded CSV and a name
+    - Upload and validate a billing PDF: provide the base64-encoded PDF,
+      filename and rate card ID
+    - Query historical billing data, validation results, and rate cards
+    - Submit validated invoices for approval
+
+    For file operations, encode the file as base64 and include it in the query
+    as JSON, e.g.:
+      {"action": "upload_pdf", "file_name": "invoice.pdf",
+       "pdf_base64": "<base64>", "rate_card_id": "<uuid>"}
+
+    Args:
+        query: Natural language question or task description (may include
+               base64 file content as JSON for upload operations).
+        session_id: Optional session identifier for multi-turn conversation.
+                    If omitted, a new session is created for each call.
+    """
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    agent = _get_agent()
+    logger.info("ask_billing_agent session=%s query_len=%d", session_id, len(query))
+
+    final_response = "Unable to process request."
+    async for item in agent.astream(query, session_id):
+        if item.is_task_complete or item.require_user_input:
+            final_response = item.content
+            break
+
+    return final_response
+
+
+def main():
+    import uvicorn
+
+    port = int(os.getenv("PORT", "5000"))
+    host = os.getenv("HOST", "0.0.0.0")
+
+    logger.info("=== Billing Validator MCP Server starting on %s:%d ===", host, port)
+
+    # Build the ASGI app from FastMCP with streamable-http transport
+    app = mcp.http_app(transport="streamable-http")
+
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()
