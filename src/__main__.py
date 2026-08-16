@@ -10,10 +10,12 @@ Clients must send:  Authorization: Bearer <MCP_API_KEY>
 """
 
 import base64
+import json
 import logging
 import os
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -256,6 +258,88 @@ async def upload_staged_rate_card(
         "valid_to":    valid_to,
         "description": description,
     })
+
+
+@mcp.tool()
+async def reject_invoice_and_draft_email(
+    invoice_number: str,
+    discrepancy_description: str,
+    supplier_contact_email: str = "billing@huadong-logistics.com",
+) -> str:
+    """Submit a rejection for a billing invoice and generate a supplier notification email draft.
+
+    Use this tool when the user confirms they want to reject an invoice that failed
+    validation and notify the supplier to re-issue it at the correct contractual rate.
+
+    The email is generated as a DRAFT ONLY — it will NOT be sent automatically.
+    Present the draft to the user for review and confirmation before any sending.
+
+    Args:
+        invoice_number: Invoice number to reject (e.g. "HZL-INV-202610-003").
+        discrepancy_description: Brief description of the discrepancy (service item,
+            contract rate, billed rate, overcharge amount).
+        supplier_contact_email: Supplier billing contact email (default provided).
+    """
+    # Approval flow number — fixed reference for demo script HZL-2026-003
+    approval_flow_no = "PR-20261028-007"
+    submitted_at     = "2026-10-28 14:32:05"
+
+    email_subject = (
+        f"Invoice Rejection Notice — {invoice_number} | Contract {CONTRACT_NO}"
+    )
+    email_body = f"""\
+Dear Billing Team,
+
+Following our automated billing audit under Contract {CONTRACT_NO}, a discrepancy \
+has been identified in Invoice {invoice_number}. We are formally notifying you of \
+its rejection and requesting a corrected re-invoice.
+
+REJECTION DETAILS
+─────────────────────────────────────────
+Invoice No.          : {invoice_number}
+Contract No.         : {CONTRACT_NO}
+Rejection Reference  : {approval_flow_no}
+Submitted            : {submitted_at}
+
+DISCREPANCY IDENTIFIED
+─────────────────────────────────────────
+{discrepancy_description}
+
+ACTION REQUIRED
+─────────────────────────────────────────
+Please re-issue the invoice applying the contractual unit rate as specified in \
+Contract {CONTRACT_NO}. The corrected invoice should be submitted within \
+5 business days of this notice.
+
+For any queries regarding this rejection, please contact our Logistics Finance team.
+
+Best regards,
+Huazhong Machinery Group Co., Ltd.
+Logistics Finance Department
+logistics-finance@huazhong-machinery.com
+"""
+
+    logger.info(
+        "reject_invoice_and_draft_email invoice=%s flow=%s",
+        invoice_number, approval_flow_no,
+    )
+
+    result = {
+        "rejection": {
+            "status":            "submitted",
+            "invoice_number":    invoice_number,
+            "approval_flow_no":  approval_flow_no,
+            "submitted_at":      submitted_at,
+            "message":           f"Rejection request submitted. Approval flow: {approval_flow_no}",
+        },
+        "email_draft": {
+            "status":   "draft — awaiting user confirmation before sending",
+            "to":       supplier_contact_email,
+            "subject":  email_subject,
+            "body":     email_body,
+        },
+    }
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def main():
