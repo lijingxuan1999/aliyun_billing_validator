@@ -149,8 +149,8 @@ L_MARGIN, R_MARGIN, T_MARGIN = 18, 18, 15
 PAGE_W   = 210
 USABLE_W = PAGE_W - L_MARGIN - R_MARGIN  # 174 mm
 
-# Column widths: CODE | DESCRIPTION | QTY | UNIT | UNIT PRICE | AMOUNT  = 174
-CW = [24, 54, 12, 20, 28, 36]
+# Column widths: DESCRIPTION | QTY | UNIT | UNIT PRICE | AMOUNT  = 174
+CW = [78, 14, 20, 28, 34]
 
 
 class InvoicePDF(FPDF):
@@ -252,11 +252,11 @@ def make_invoice(inv: dict):
     # Header row
     pdf.set_fill_color(235, 235, 235)
     pdf.set_font("Helvetica", "B", 8)
-    headers = ["SERVICE CODE", "DESCRIPTION", "QTY", "UNIT", "UNIT PRICE", "AMOUNT (CNY)"]
-    aligns  = ["C", "L", "R", "R", "R", "R"]
+    headers = ["DESCRIPTION", "QTY", "UNIT", "UNIT PRICE", "AMOUNT (CNY)"]
+    aligns  = ["L", "R", "R", "R", "R"]
     for i, (txt, w, a) in enumerate(zip(headers, CW, aligns)):
         if i < len(CW) - 1:
-            _cell(pdf, w, 7, txt, border=1, align=a, fill=True)
+            _cell(pdf, w, 7, f"  {txt}" if a == "L" else txt, border=1, align=a, fill=True)
         else:
             _cell_nl(pdf, w, 7, txt, border=1, align=a, fill=True)
 
@@ -264,12 +264,11 @@ def make_invoice(inv: dict):
     pdf.set_font("Helvetica", "", 8.5)
     for row in inv["charges"]:
         code, desc, qty, unit, price, amount = row
-        _cell(pdf,    CW[0], 6, code,              border="LR", align="C")
-        _cell(pdf,    CW[1], 6, f"  {desc}",       border="LR", align="L")
-        _cell(pdf,    CW[2], 6, f"{qty:,}",        border="LR", align="R")
-        _cell(pdf,    CW[3], 6, unit,              border="LR", align="R")
-        _cell(pdf,    CW[4], 6, f"{price:,.2f}",   border="LR", align="R")
-        _cell_nl(pdf, CW[5], 6, f"{amount:,.2f}",  border="LR", align="R")
+        _cell(pdf,    CW[0], 6, f"  {desc}",       border="LR", align="L")
+        _cell(pdf,    CW[1], 6, f"{qty:,}",        border="LR", align="R")
+        _cell(pdf,    CW[2], 6, unit,              border="LR", align="R")
+        _cell(pdf,    CW[3], 6, f"{price:,.2f}",   border="LR", align="R")
+        _cell_nl(pdf, CW[4], 6, f"{amount:,.2f}",  border="LR", align="R")
 
     # Bottom rule
     pdf.set_line_width(0.4)
@@ -286,8 +285,6 @@ def make_invoice(inv: dict):
     _cell_nl(pdf, CW[-1],  7.5, f"CNY {inv['total']:,.2f}",
              border=1, align="R", fill=True)
     pdf.ln(10)
-
-    # ── Payment note ──────────────────────────────────────────────────────────
     pdf.set_font("Helvetica", "I", 8)
     pdf.set_text_color(100, 100, 100)
     pdf.multi_cell(
